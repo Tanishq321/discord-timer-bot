@@ -58,8 +58,9 @@ In Discord: `/schedule when: in 2m message: Hello from Render!`
 ---
 
 ## Changing the code later
-Edit the file on GitHub (open it → pencil icon → **Commit changes**).
-Render redeploys automatically within a couple of minutes. Your timers are safe in Neon.
+Edit the file on GitHub (open it → pencil icon → **Commit changes**), or use **Add file → Upload files**
+to replace files with new versions. Render redeploys automatically within a couple of minutes.
+Your timers are safe in Neon, and the database upgrades itself when the new version starts.
 
 ## Troubleshooting
 - **Where are the logs?** Render → your service → **Logs**.

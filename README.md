@@ -1,65 +1,85 @@
 # Discord Timer Bot
 
-Schedule a message that pings `@everyone` (or `@here`, or a role) at the time you choose.
+Schedule messages that ping your server at the time you choose, with reminders, RSVPs,
+countdowns, birthdays and more.
 
 ## Commands
 
+### Scheduling
 | Command | What it does |
 |---|---|
-| `/schedule when message [channel] [ping] [role] [repeat]` | Schedule a ping |
-| `/timers` | Show upcoming timers in this server |
-| `/cancel timer_id` | Cancel a timer |
+| `/schedule when message …` | Schedule a server message (options below) |
+| `/edit timer_id …` | Change anything about a timer. Only fill in what you want to change |
+| `/pause` · `/resume` · `/cancel` | Pause, resume or delete a timer (the timer number autocompletes) |
+| `/timers` | List this server's timers |
+| `/remindme when message [repeat] [remind_before]` | Personal reminder sent to **your DMs** (no server ping, anyone can use it) |
+| `/myreminders` | List your personal reminders |
+| `/status` | Uptime, latency, timer counts, next timer |
 
-**Examples**
+Every new timer's confirmation has buttons: **📤 Send now · ✏️ Edit · ⏸️ Pause/▶️ Resume · 🗑️ Cancel**.
+Only the person who made it, or a moderator, can use them.
+
+### `/schedule` options (all optional except `when` and `message`)
+| Option | Example | What it does |
+|---|---|---|
+| `channel` | #general | Where to send it (default: current channel) |
+| `ping` | @everyone / @here / No ping | Who to ping (default @everyone) |
+| `role` | @Gamers | Ping a role instead |
+| `ping_going_from` | `3` | Ping **only people who clicked ✅ Going** on timer #3's RSVP message |
+| `repeat` | `daily`, `weekdays`, `monthly`, `every 2h`, `mon,thu` | Repeat rule |
+| `remind_before` | `1d, 1h, 10m` | Extra "starts in 1 hour" heads-up messages |
+| `title` / `image_url` / `color` | `Match Night`, a link, `gold` / `#ff8800` | Turns the message into a nice embed |
+| `rsvp` | True | Adds **✅ Going / ❌ Not going / 👥 Who's going?** buttons with live counts |
+| `countdown` | True | Posts a countdown message right away that ticks down live until the time |
+| `thread` | True | Opens a discussion thread under the message |
+| `delete_after` | `2h` | Auto-deletes the messages later to keep the channel clean |
+| `discord_event` | True | Also creates an event in the server's **Events** tab |
+
+**Time formats:** `in 30m`, `2h15m`, `18:30`, `6:30 pm`, `noon`, `today 9pm`, `tomorrow 9am`, `friday 8pm`,
+`next friday 8pm`, `in 3 days at noon`, `5 november 8pm`, `dec 25 at 10am`, `2026-11-02 18:30`.
+Use `\n` in the message for a new line, or use the **Edit** button, whose message box takes real new lines.
+
+**Example: game night with RSVP**
 ```
-/schedule when: 18:30 message: Match starts now, join VC!
-/schedule when: in 2h message: Submission deadline in 1 hour ping: @here
-/schedule when: tomorrow 9am message: Good morning!\nStandup in 10 mins repeat: Every day
-/schedule when: 2026-11-02 20:00 message: Movie night 🍿 channel: #general
+/schedule when: friday 7pm  message: Game night tonight at 9! Who's in?  title: 🎮 Game Night  color: purple  rsvp: True
+/schedule when: friday 9pm  message: Starting now, hop in VC!  ping_going_from: 1  remind_before: 15m
 ```
 
-Time formats: `in 30m`, `2h15m`, `1d 4h`, `18:30`, `6:30 pm`, `6pm`, `tomorrow 9am`,
-`2026-11-02 18:30`, `02-11-2026 18:30`, `02/11/2026 6:30 pm`.
-A time with no date means the next time it comes around (today, or tomorrow if it has passed).
-Times are read in the `TIMEZONE` from `.env` (default `Asia/Kolkata`). The confirmation message
-shows the time in each viewer's own timezone, so you can double-check it.
+### Admin settings (`/settings`, needs Manage Server)
+| Command | What it does |
+|---|---|
+| `/settings timezone` | Server timezone for reading times (autocomplete; `IST`, `GMT`, `EST`… work) |
+| `/settings scheduler_role @role` | Let a role use `/schedule` (by default only mods: Mention @everyone / Manage Server) |
+| `/settings max_timers 5` | Limit active timers per member (mods exempt) |
+| `/settings log_channel #mod-log` | Logs who scheduled / edited / paused / cancelled what |
+| `/settings birthday_channel #general [hour]` | Turns on birthday wishes (default 09:00) |
+| `/settings show` | Show current settings |
 
-Only members with the **Mention @everyone** permission see `/schedule` and `/cancel` by default.
-Server admins can change that under Server Settings → Integrations → your bot.
+### Birthdays
+`/birthday set day month` · `/birthday remove` · `/birthday list` (upcoming birthdays).
+The bot posts "🎂 Happy birthday @you!" in the birthday channel on the day.
 
 ## Setup
 
 ### 1. Create the bot
-1. Go to https://discord.com/developers/applications → **New Application**.
-2. Open **Bot** → **Reset Token** → copy the token (keep it secret).
+1. https://discord.com/developers/applications → **New Application**.
+2. **Bot** → **Reset Token** → copy the token (keep it secret).
 3. Copy the **Application ID** from **General Information**.
 
-### 2. Invite it to your server
-Open this link with your Application ID filled in:
+### 2. Invite it (or re-invite to give it the new permissions)
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot+applications.commands&permissions=150528
+https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot+applications.commands&permissions=17910013840384
 ```
-That grants View Channels, Send Messages, Embed Links and **Mention @everyone, @here, and All Roles**.
-Without the mention permission, the message still posts but nobody gets notified.
+This grants: View Channels, Send Messages, Embed Links, Read Message History, **Mention @everyone**,
+Create Public Threads, Send Messages in Threads, and Create/Manage Events.
+Opening the link again for a server the bot is already in just updates its permissions. Your timers stay.
 
 ### 3. Run it
-```bash
-cd discord-timer-bot
-python -m venv venv
-# Windows: venv\Scripts\activate     macOS/Linux: source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env        # Windows: copy .env.example .env
-# edit .env and paste your token
-python bot.py
-```
-Tip: put your server ID in `GUILD_ID` (right-click the server → Copy Server ID, with Developer Mode on)
-so the slash commands appear immediately.
-
-## Keeping it running 24/7
-The bot only fires timers while it is running. Timers are saved in `timers.db`,
-so if the bot was off when a timer was due, it sends it as soon as it starts again.
-
-To keep it online without your laptop:
-- **DEPLOY-RENDER.md** is the easiest way: free, all in the browser, no terminal (Render + Neon + UptimeRobot).
-- **HOSTING.md** covers your own small cloud server (Azure for Students / Oracle), which is more reliable
-  but needs a few terminal commands.
+- **24/7 for free in your browser:** follow **DEPLOY-RENDER.md**
+- **Your own cloud server:** follow **HOSTING.md**
+- **On your computer (for testing):**
+  ```bash
+  pip install -r requirements.txt
+  cp .env.example .env        # paste your token into .env
+  python bot.py
+  ```
