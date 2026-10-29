@@ -1,0 +1,4 @@
+discord.py>=2.4
+python-dotenv>=1.0
+psycopg[binary]>=3.2  # Postgres driver, used when DATABASE_URL is set
+tzdata  # timezone data (needed on Windows)

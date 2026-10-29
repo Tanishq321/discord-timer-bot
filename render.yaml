@@ -1,0 +1,17 @@
+# Render Blueprint: Render reads this file and sets the service up for you.
+services:
+  - type: web
+    name: discord-timer-bot
+    runtime: python
+    plan: free
+    region: oregon        # match your Neon region (AWS US West 2 / Oregon)
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false        # Render will ask you to paste it
+      - key: DATABASE_URL
+        sync: false        # your Neon connection string
+      - key: TIMEZONE
+        value: Asia/Kolkata
