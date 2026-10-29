@@ -42,7 +42,11 @@ and make sure the bot is already invited to your server (invite link is in READM
 6. Open the service, then click its URL at the top (like `https://discord-timer-bot-xxxx.onrender.com`).
    You should see: **"Timer bot online. 0 timer(s) scheduled."** Copy this URL.
 
-## 4. Keep it awake (UptimeRobot), ~2 min
+## 4. Keep it awake
+The bot now visits its own web page every 5 minutes, which keeps Render from putting it to sleep.
+Check the Render **Logs** for the line `Keep-alive: visiting https://... every 5 min`.
+
+Recommended backup (~2 min): if the bot ever crashes and stops pinging itself, an outside pinger wakes it up again.
 1. Sign up at https://uptimerobot.com (free plan).
 2. **New monitor** → type **HTTP(s)** → paste your Render URL → interval **5 minutes** → **Create**.
 
@@ -59,6 +63,10 @@ Render redeploys automatically within a couple of minutes. Your timers are safe 
 
 ## Troubleshooting
 - **Where are the logs?** Render → your service → **Logs**.
+- **A command works once, then the timer doesn't fire and commands say "The application did not respond":**
+  Render put the app to sleep. Make sure you're running the latest `bot.py` (it has the keep-alive) and set up
+  UptimeRobot. Opening your Render URL in a browser wakes the bot up right away, and any timers it missed
+  are sent with a "Delayed" note.
 - **Logs show `429 Too Many Requests` or "blocked by Cloudflare":** Render's free servers share IP addresses
   with other people's apps, and Discord sometimes blocks a shared IP for a while. Go to **Manual Deploy →
   Clear build cache & deploy** to move to a different machine, or try again later. If it keeps happening,

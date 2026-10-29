@@ -31,7 +31,12 @@ DATABASE_URL = os.getenv("DATABASE_URL")          # set this on Render (free Neo
 DB_PATH = os.getenv("DB_PATH", "timers.db")       # used when DATABASE_URL is not set
 GUILD_ID = os.getenv("GUILD_ID")                  # optional: instant slash commands in one server
 PORT = os.getenv("PORT")                          # Render sets this; we answer health pings on it
+# Public URL of this bot's web page. Render sets RENDER_EXTERNAL_URL automatically.
+# The bot visits it every few minutes so Render's free plan never puts it to sleep.
+KEEPALIVE_URL = os.getenv("KEEPALIVE_URL") or os.getenv("RENDER_EXTERNAL_URL")
+KEEPALIVE_MINUTES = 5
 CHECK_EVERY_SECONDS = 5
+LATE_NOTICE_SECONDS = 120  # if a timer fires this late, say so in the message
 
 log = logging.getLogger("timer-bot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -80,6 +85,23 @@ class TimerBot(discord.Client):
         else:
             await self.tree.sync()
         self.check_due.start()
+        if KEEPALIVE_URL:
+            self.keep_awake.start()
+            log.info("Keep-alive: visiting %s every %d min", KEEPALIVE_URL, KEEPALIVE_MINUTES)
+
+    @tasks.loop(minutes=KEEPALIVE_MINUTES)
+    async def keep_awake(self) -> None:
+        """Visit our own public URL. Render counts this as incoming traffic, so the app stays awake."""
+        try:
+            async with self.http_session_for_ping.get(KEEPALIVE_URL, timeout=30) as r:
+                log.debug("Keep-alive ping: %s", r.status)
+        except Exception as e:
+            log.warning("Keep-alive ping failed: %s", e)
+
+    @keep_awake.before_loop
+    async def _make_session(self) -> None:
+        import aiohttp
+        self.http_session_for_ping = aiohttp.ClientSession()
 
     async def start_web_server(self) -> None:
         """Tiny web page so hosts like Render see a running web service and pingers keep it awake."""
@@ -92,7 +114,7 @@ class TimerBot(discord.Client):
 
         app = web.Application()
         app.router.add_get("/", health)
-        runner = web.AppRunner(app)
+        runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", int(PORT)).start()
         log.info("Health page listening on port %s", PORT)
@@ -109,6 +131,9 @@ class TimerBot(discord.Client):
             try:
                 channel = self.get_channel(t["channel_id"]) or await self.fetch_channel(t["channel_id"])
                 content = f"{ping_prefix(t['ping'])} {t['message']}".strip()
+                if now - t["fire_at"] > LATE_NOTICE_SECONDS:
+                    content += (f"\n-# ⏰ Delayed: this was scheduled for <t:{t['fire_at']}:t>, "
+                                f"but the bot was offline.")
                 await channel.send(
                     content,
                     allowed_mentions=discord.AllowedMentions(everyone=True, roles=True, users=True),
