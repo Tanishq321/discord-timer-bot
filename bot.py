@@ -185,6 +185,7 @@ class TimerBot(discord.Client):
         self.deletions: list[dict] = []
         self.lock = asyncio.Lock()
         self.session: Optional[aiohttp.ClientSession] = None
+        self._bg_tasks: set = set()
 
     # ------------------------------------------------------------ startup
     async def setup_hook(self) -> None:
@@ -207,6 +208,11 @@ class TimerBot(discord.Client):
             await self.tree.sync()
 
         self.session = aiohttp.ClientSession()
+        # Warm up the date parser now; its first use is slow, which could make a command time out.
+        try:
+            await asyncio.to_thread(parse_when, "5 november 8pm", datetime.now(ZoneInfo(DEFAULT_TZ)))
+        except Exception:
+            pass
         self.check_due.start()
         self.birthday_check.start()
         if KEEPALIVE_URL:
@@ -255,8 +261,19 @@ class TimerBot(discord.Client):
         data = dict(self.settings.get(guild_id, {}))
         data.update(changes)
         self.settings[guild_id] = data
-        await asyncio.to_thread(store.save_settings, guild_id, data)
+        # Save in the background so commands can reply to Discord instantly.
+        self._bg(asyncio.to_thread(store.save_settings, guild_id, data), "save settings")
         return self.gsettings(guild_id)
+
+    def _bg(self, coro, what: str) -> None:
+        async def runner():
+            try:
+                await coro
+            except Exception:
+                log.exception("Background task failed: %s", what)
+        task = asyncio.create_task(runner())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     def can_schedule(self, member) -> bool:
         if is_manager(member):
@@ -793,11 +810,12 @@ class TimerButton(discord.ui.DynamicItem[discord.ui.Button],
             return
 
         if self.action in ("pause", "resume"):
+            await interaction.response.defer()  # acknowledge the click instantly
             async with bot.lock:
                 err = await bot.set_paused(t, self.action == "pause")
             if err:
-                return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
-            await interaction.response.edit_message(view=timer_controls(t))
+                return await interaction.followup.send(f"❌ {err}", ephemeral=True)
+            await interaction.edit_original_response(view=timer_controls(t))
             word = "paused ⏸️" if self.action == "pause" else f"resumed ▶️, next run <t:{t['fire_at']}:R>"
             await interaction.followup.send(f"Timer #{t['id']} {word}.", ephemeral=True)
             if t["ping"] != "dm":
@@ -840,16 +858,18 @@ class RsvpButton(discord.ui.DynamicItem[discord.ui.Button], template=r"rsvp:(?P<
     async def callback(self, interaction: discord.Interaction):
         mid = interaction.message.id
         if self.choice == "list":
+            await interaction.response.defer(ephemeral=True, thinking=True)
             users = await asyncio.to_thread(store.rsvp_users, mid)
             yes = ", ".join(f"<@{u}>" for u in users["yes"]) or "nobody yet"
             no = ", ".join(f"<@{u}>" for u in users["no"]) or "nobody"
             e = discord.Embed(title="👥 RSVPs", color=BLURPLE)
             e.add_field(name=f"✅ Going ({len(users['yes'])})", value=yes[:1024], inline=False)
             e.add_field(name=f"❌ Not going ({len(users['no'])})", value=no[:1024], inline=False)
-            return await interaction.response.send_message(embed=e, ephemeral=True)
+            return await interaction.followup.send(embed=e, ephemeral=True)
+        await interaction.response.defer()  # acknowledge the click instantly, then save
         await asyncio.to_thread(store.set_rsvp, mid, interaction.user.id, self.choice)
         users = await asyncio.to_thread(store.rsvp_users, mid)
-        await interaction.response.edit_message(view=rsvp_view(len(users["yes"]), len(users["no"])))
+        await interaction.edit_original_response(view=rsvp_view(len(users["yes"]), len(users["no"])))
 
 
 class EditModal(discord.ui.Modal):
@@ -1000,6 +1020,9 @@ async def schedule(
                 f"❌ You already have {mine} timers here (the limit is {s['max_timers']}). Cancel one first.",
                 ephemeral=True)
 
+    # Reply to Discord right away (it allows only 3 seconds); the slow work happens after this.
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
     base = {"guild_id": interaction.guild_id, "channel_id": (channel or interaction.channel).id,
             "author_id": member.id, "message": "", "ping": "everyone", "fire_at": 0, "repeat": "once",
             "options": {"tz": s["timezone"]}}
@@ -1010,25 +1033,32 @@ async def schedule(
             title=title, image_url=image_url, color=color, rsvp=rsvp, countdown=countdown, thread=thread,
             delete_after=delete_after, discord_event=discord_event)
     except (UserError, ValueError) as e:
-        return await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+        return await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
-    await interaction.response.defer(thinking=True)
     try:
         async with bot.lock:
             t = await bot.create_timer(t)
     except Exception:
         log.exception("Could not save timer")
-        return await interaction.followup.send("❌ Couldn't save the timer (database error). Try again.")
+        return await interaction.followup.send("❌ Couldn't save the timer (database error). Try again.",
+                                               ephemeral=True)
 
     fa = t["fire_at"]
-    text = (f"⏰ Timer **#{t['id']}** set for <t:{fa}:F> (<t:{fa}:R>) in <#{t['channel_id']}>"
+    text = (f"⏰ {member.mention} set timer **#{t['id']}** for <t:{fa}:F> (<t:{fa}:R>) in <#{t['channel_id']}>"
             f" → {ping_label(t['ping'])}.")
     icons = feature_icons(t)
     if icons:
         text += f"\n{icons}"
+    # Public confirmation in the channel (with buttons); private notes only for the person who made it.
+    try:
+        await interaction.channel.send(text, view=timer_controls(t), allowed_mentions=NO_MENTIONS)
+        private = f"✅ Timer #{t['id']} scheduled."
+    except discord.HTTPException:
+        private = text
     if warnings:
-        text += "\n" + "\n".join(f"⚠️ {w}" for w in warnings)
-    await interaction.followup.send(text, view=timer_controls(t), allowed_mentions=NO_MENTIONS)
+        private += "\n" + "\n".join(f"⚠️ {w}" for w in warnings)
+    await interaction.followup.send(private, ephemeral=True, allowed_mentions=NO_MENTIONS,
+                                    view=None if private != text else timer_controls(t))
     await bot.log_event(t["guild_id"], f"📝 {member} scheduled timer #{t['id']} for <t:{fa}:f> in "
                                        f"<#{t['channel_id']}>: {label_of(t)}")
 
@@ -1173,12 +1203,12 @@ async def remindme(interaction: discord.Interaction, when: str, message: app_com
     base = {"guild_id": interaction.guild_id or 0, "channel_id": 0, "author_id": interaction.user.id,
             "message": "", "ping": "dm", "fire_at": 0, "repeat": "once",
             "options": {"tz": bot.gsettings(interaction.guild_id)["timezone"]}}
+    await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         t, _ = await bot.prepare(interaction, base, is_new=True, when=when, message=message,
                                  repeat=repeat or "once", remind_before=remind_before)
     except (UserError, ValueError) as e:
-        return await interaction.response.send_message(f"❌ {e}", ephemeral=True)
-    await interaction.response.defer(ephemeral=True, thinking=True)
+        return await interaction.followup.send(f"❌ {e}", ephemeral=True)
     async with bot.lock:
         t = await bot.create_timer(t)
     fa = t["fire_at"]
@@ -1280,24 +1310,26 @@ async def birthday_set(interaction: discord.Interaction, day: app_commands.Range
         datetime(2000, month, day)  # 2000 is a leap year, so 29 Feb is allowed
     except ValueError:
         return await interaction.response.send_message("❌ That date doesn't exist.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True, thinking=True)
     await asyncio.to_thread(store.set_birthday, interaction.guild_id, interaction.user.id, day, month)
     s = bot.gsettings(interaction.guild_id)
     extra = "" if s["birthday_channel"] else "\n-# An admin still needs to pick a channel with `/settings birthday_channel`."
-    await interaction.response.send_message(f"🎂 Saved: **{day} {MONTHS[month - 1]}**.{extra}", ephemeral=True)
+    await interaction.followup.send(f"🎂 Saved: **{day} {MONTHS[month - 1]}**.{extra}", ephemeral=True)
 
 
 @birthday_group.command(name="remove", description="Remove your birthday")
 async def birthday_remove(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
     removed = await asyncio.to_thread(store.remove_birthday, interaction.guild_id, interaction.user.id)
-    await interaction.response.send_message("🗑️ Removed." if removed else "You hadn't set a birthday.", ephemeral=True)
+    await interaction.followup.send("🗑️ Removed." if removed else "You hadn't set a birthday.", ephemeral=True)
 
 
 @birthday_group.command(name="list", description="Upcoming birthdays in this server")
 async def birthday_list(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
     rows = await asyncio.to_thread(store.birthdays, interaction.guild_id)
     if not rows:
-        return await interaction.response.send_message("No birthdays saved yet. Add yours with `/birthday set`.",
-                                                       ephemeral=True)
+        return await interaction.followup.send("No birthdays saved yet. Add yours with `/birthday set`.")
     today = datetime.now(bot.tz_for(interaction.guild_id)).date()
 
     def days_until(r):
@@ -1315,7 +1347,7 @@ async def birthday_list(interaction: discord.Interaction):
         when = "🎉 today!" if n == 0 else ("tomorrow" if n == 1 else f"in {n} days")
         lines.append(f"<@{r['user_id']}> · {r['day']} {MONTHS[r['month'] - 1]} · {when}")
     e = discord.Embed(title="🎂 Upcoming birthdays", description="\n".join(lines), color=0xEB459E)
-    await interaction.response.send_message(embed=e, allowed_mentions=NO_MENTIONS)
+    await interaction.followup.send(embed=e, allowed_mentions=NO_MENTIONS)
 
 
 # ---------------------------------------------------------------- /status
